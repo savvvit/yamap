@@ -77,6 +77,7 @@
         // ========== Параметры из URL ==========
         const urlParams = new URLSearchParams(window.location.search);
         const CALLBACK_URL = urlParams.get('callback_url');
+        const LOCATION = urlParams.get('location');          // например "село Новокули"
         const CENTER_LAT = urlParams.has('center_lat') ? parseFloat(urlParams.get('center_lat')) : null;
         const CENTER_LON = urlParams.has('center_lon') ? parseFloat(urlParams.get('center_lon')) : null;
         const RADIUS_KM = urlParams.has('radius_km') ? parseFloat(urlParams.get('radius_km')) : null;
@@ -86,34 +87,35 @@
             throw new Error('callback_url is required');
         }
 
-        // === ДВА КЛЮЧА ===
-        const MAIN_API_KEY = "453e51e5-8c87-4fa2-a65f-c28a5184369e";   // для геокодера
-        const SUGGEST_API_KEY = "c36c1a87-abde-4aee-ab53-dbfbfa1fb53f";               // отдельный ключ для suggest
+        // === ДВА КЛЮЧА (подставьте свои) ===
+        const MAIN_API_KEY = "453e51e5-8c87-4fa2-a65f-c28a5184369e";
+        const SUGGEST_API_KEY = "c36c1a87-abde-4aee-ab53-dbfbfa1fb53f";
 
         const searchInput = document.getElementById("searchInput");
         const suggestList = document.getElementById("suggestList");
         let currentTimeout = null;
 
-        // ========== Запрос подсказок через HTTP Suggest API ==========
+        // ========== Запрос подсказок с «хитрым» добавлением location ==========
         async function fetchSuggestions(query) {
             if (!query.trim()) return [];
             
-            let suggestUrl = `https://suggest-maps.yandex.ru/v1/suggest?apikey=${SUGGEST_API_KEY}&text=${encodeURIComponent(query)}&types=geo,biz&language=ru_RU&results=15`;
+            // Формируем поисковую фразу: если передан location, добавляем его
+            let searchText = query;
+            if (LOCATION && LOCATION.trim()) {
+                searchText = `${query}, ${LOCATION}`;
+            }
             
-            // Блок ограничения области поиска
+            let suggestUrl = `https://suggest-maps.yandex.ru/v1/suggest?apikey=${SUGGEST_API_KEY}&text=${encodeURIComponent(searchText)}&types=geo,biz&language=ru_RU&results=20`;
+            
+            // Добавляем ll для получения расстояния и (опционально) ограничения области
             if (CENTER_LAT !== null && CENTER_LON !== null && !isNaN(CENTER_LAT) && !isNaN(CENTER_LON)) {
-                // Добавляем центр поиска
                 suggestUrl += `&ll=${CENTER_LON},${CENTER_LAT}`;
-                
-                // Рассчитываем spn: размер области в градусах
-                // Радиус (км) переводим в градусы (1° ≈ 111 км)
-                const radiusDeg = RADIUS_KM !== null ? RADIUS_KM / 111.0 : 5 / 111.0;
-                // spn = 2 * radiusDeg (полный размер области от края до края)
-                const spnValue = (radiusDeg * 2).toFixed(6);
-                suggestUrl += `&spn=${spnValue},${spnValue}`;
-                
-                // Строгое ограничение области
-                suggestUrl += `&strict_bounds=1`;
+                // Если задан радиус, можно добавить spn + strict_bounds (необязательно)
+                if (RADIUS_KM !== null && !isNaN(RADIUS_KM)) {
+                    const radiusDeg = RADIUS_KM / 111.0;
+                    const spnValue = (radiusDeg * 2).toFixed(6);
+                    suggestUrl += `&spn=${spnValue},${spnValue}&strict_bounds=1`;
+                }
             }
             
             try {
@@ -124,23 +126,39 @@
                 }
                 const data = await response.json();
                 if (data && data.results) {
-                    let results = data.results;
-                    // Дополнительная фильтрация по расстоянию (для надёжности)
-                    if (CENTER_LAT !== null && CENTER_LON !== null && RADIUS_KM !== null) {
-                        results = results.filter(item => {
-                            if (!item.geometry || !item.geometry.coordinates) return true;
-                            const [lng, lat] = item.geometry.coordinates;
-                            const dist = getDistanceFromLatLonInKm(CENTER_LAT, CENTER_LON, lat, lng);
-                            return dist <= RADIUS_KM;
+                    let results = data.results.map(item => {
+                        let distance = null;
+                        if (item.distance && typeof item.distance === 'object') {
+                            distance = item.distance.value; // в метрах
+                        }
+                        return {
+                            title: item.title.text,
+                            subtitle: item.subtitle?.text || "",
+                            lat: item.geometry?.coordinates ? item.geometry.coordinates[1] : null,
+                            lng: item.geometry?.coordinates ? item.geometry.coordinates[0] : null,
+                            kind: item.kind || null,
+                            distance: distance
+                        };
+                    });
+                    
+                    // Сортировка по расстоянию (от меньшего к большему), если есть координаты центра
+                    if (CENTER_LAT !== null && CENTER_LON !== null) {
+                        results.sort((a, b) => {
+                            // Если есть distance от API – используем его
+                            if (a.distance !== null && b.distance !== null) return a.distance - b.distance;
+                            // Если нет – вычисляем сами (на случай, если API не вернул)
+                            let distA = a.distance;
+                            let distB = b.distance;
+                            if (distA === null && a.lat && a.lng) distA = getDistanceFromLatLonInKm(CENTER_LAT, CENTER_LON, a.lat, a.lng) * 1000;
+                            if (distB === null && b.lat && b.lng) distB = getDistanceFromLatLonInKm(CENTER_LAT, CENTER_LON, b.lat, b.lng) * 1000;
+                            if (distA !== null && distB !== null) return distA - distB;
+                            if (distA !== null) return -1;
+                            if (distB !== null) return 1;
+                            return 0;
                         });
                     }
-                    return results.map(item => ({
-                        title: item.title.text,
-                        subtitle: item.subtitle?.text || "",
-                        lat: item.geometry?.coordinates ? item.geometry.coordinates[1] : null,
-                        lng: item.geometry?.coordinates ? item.geometry.coordinates[0] : null,
-                        kind: item.kind || null
-                    }));
+                    
+                    return results;
                 }
                 return [];
             } catch (err) {
@@ -149,7 +167,20 @@
             }
         }
 
-        // ========== Геокодирование через HTTP Геокодер (если у подсказки нет координат) ==========
+        // Функция расстояния (км)
+        function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
+            const R = 6371;
+            const dLat = deg2rad(lat2 - lat1);
+            const dLon = deg2rad(lon2 - lon1);
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                      Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) *
+                      Math.sin(dLon/2) * Math.sin(dLon/2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            return R * c;
+        }
+        function deg2rad(deg) { return deg * (Math.PI/180); }
+
+        // Геокодирование (если у подсказки нет координат)
         async function geocodeAndRedirect(address) {
             const url = `https://geocode-maps.yandex.ru/1.x/?apikey=${MAIN_API_KEY}&geocode=${encodeURIComponent(address)}&format=json&results=1`;
             try {
@@ -166,11 +197,8 @@
                     const name = geoObject.name || "";
                     const postalCode = geoObject.metaDataProperty.GeocoderMetaData.Address?.postal_code || "";
                     let extra = "";
-                    if (kind === "organization") {
-                        extra = name;
-                    } else if (postalCode) {
-                        extra = `Индекс: ${postalCode}`;
-                    }
+                    if (kind === "organization") extra = name;
+                    else if (postalCode) extra = `Индекс: ${postalCode}`;
                     redirectWithResult(fullAddress, lat, lng, extra, kind);
                 } else {
                     showError("Не найдено");
@@ -181,7 +209,7 @@
             }
         }
 
-        // Если у подсказки уже есть координаты – делаем обратный геокодер (для получения полного адреса)
+        // Обогащение, если координаты уже есть
         async function enrichAndRedirect(address, lat, lng, subtitle, kind) {
             const url = `https://geocode-maps.yandex.ru/1.x/?apikey=${MAIN_API_KEY}&geocode=${lng},${lat}&format=json&results=1`;
             try {
@@ -230,20 +258,7 @@
             setTimeout(() => errDiv.remove(), 3000);
         }
 
-        // Вспомогательные функции для расстояния
-        function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
-            const R = 6371;
-            const dLat = deg2rad(lat2 - lat1);
-            const dLon = deg2rad(lon2 - lon1);
-            const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-                      Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) *
-                      Math.sin(dLon/2) * Math.sin(dLon/2);
-            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-            return R * c;
-        }
-        function deg2rad(deg) { return deg * (Math.PI/180); }
-
-        // Отображение подсказок (с title и subtitle)
+        // Отображение подсказок
         function showSuggestions(suggestions) {
             if (!suggestions.length) {
                 suggestList.style.display = "none";
@@ -282,7 +297,6 @@
             }, 300);
         });
 
-        // Закрыть подсказки при клике вне
         document.addEventListener("click", (e) => {
             if (!searchInput.contains(e.target) && !suggestList.contains(e.target)) {
                 suggestList.style.display = "none";
