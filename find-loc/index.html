@@ -100,10 +100,20 @@
             
             let suggestUrl = `https://suggest-maps.yandex.ru/v1/suggest?apikey=${SUGGEST_API_KEY}&text=${encodeURIComponent(query)}&types=geo,biz&language=ru_RU&results=15`;
             
+            // Блок ограничения области поиска
             if (CENTER_LAT !== null && CENTER_LON !== null && !isNaN(CENTER_LAT) && !isNaN(CENTER_LON)) {
+                // Добавляем центр поиска
                 suggestUrl += `&ll=${CENTER_LON},${CENTER_LAT}`;
+                
+                // Рассчитываем spn: размер области в градусах
+                // Радиус (км) переводим в градусы (1° ≈ 111 км)
                 const radiusDeg = RADIUS_KM !== null ? RADIUS_KM / 111.0 : 5 / 111.0;
-                suggestUrl += `&r=${radiusDeg}`;
+                // spn = 2 * radiusDeg (полный размер области от края до края)
+                const spnValue = (radiusDeg * 2).toFixed(6);
+                suggestUrl += `&spn=${spnValue},${spnValue}`;
+                
+                // Строгое ограничение области
+                suggestUrl += `&strict_bounds=1`;
             }
             
             try {
