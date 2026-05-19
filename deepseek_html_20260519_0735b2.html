@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Glide Location Picker</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+        }
+        body {
+            margin: 0;
+            padding: 16px;
+            background: white;
+        }
+        .search-container {
+            position: relative;
+            width: 100%;
+        }
+        input {
+            width: 100%;
+            padding: 12px 16px;
+            font-size: 16px;
+            border: 1px solid #ccc;
+            border-radius: 24px;
+            outline: none;
+            background: white;
+        }
+        input:focus {
+            border-color: #007aff;
+            box-shadow: 0 0 0 2px rgba(0,122,255,0.2);
+        }
+        .suggest-list {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            max-height: 300px;
+            overflow-y: auto;
+            z-index: 1000;
+            margin-top: 4px;
+        }
+        .suggest-item {
+            padding: 12px 16px;
+            cursor: pointer;
+            border-bottom: 1px solid #eee;
+        }
+        .suggest-item:active {
+            background-color: #f0f0f0;
+        }
+        .error {
+            color: #d32f2f;
+            margin-top: 8px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="search-container">
+        <input type="text" id="searchInput" placeholder="Поиск адреса или организации" autocomplete="off">
+        <div id="suggestList" class="suggest-list" style="display: none;"></div>
+    </div>
+
+    <script>
+        // ========== 1. Параметры из URL ==========
+        const urlParams = new URLSearchParams(window.location.search);
+        const CALLBACK_URL = urlParams.get('callback_url');
+        const CENTER_LAT = urlParams.has('center_lat') ? parseFloat(urlParams.get('center_lat')) : null;
+        const CENTER_LON = urlParams.has('center_lon') ? parseFloat(urlParams.get('center_lon')) : null;
+        const RADIUS_KM = urlParams.has('radius_km') ? parseFloat(urlParams.get('radius_km')) : null;
+
+        // Проверка обязательного параметра
+        if (!CALLBACK_URL) {
+            document.body.innerHTML = '<div class="error">Ошибка: не указан callback_url</div>';
+            throw new Error('callback_url is required');
+        }
+
+        const API_KEY = "ВАШ_API_КЛЮЧ";  // Замените на реальный ключ
+
+        const searchInput = document.getElementById("searchInput");
+        const suggestList = document.getElementById("suggestList");
+        let currentTimeout = null;
+
+        // ========== 2. Запрос подсказок ==========
+        async function fetchSuggestions(query) {
+            if (!query.trim()) return [];
+            
+            let suggestUrl = `https://suggest-maps.yandex.ru/v1/suggest?apikey=${API_KEY}&text=${encodeURIComponent(query)}&types=geo&language=ru_RU&results=10`;
+            
+            // Если задан центр, добавляем ll и r для ограничения области
+            if (CENTER_LAT !== null && CENTER_LON !== null && !isNaN(CENTER_LAT) && !isNaN(CENTER_LON)) {
+                suggestUrl += `&ll=${CENTER_LON},${CENTER_LAT}`;
+                const radiusDeg = RADIUS_KM !== null ? RADIUS_KM / 111.0 : 5 / 111.0;
+                suggestUrl += `&r=${radiusDeg}`;
+            }
+            // Если центр не задан — не добавляем ll и r, ищем по всей стране
+            
+            try {
+                const response = await fetch(suggestUrl);
+                const data = await response.json();
+                if (data && data.results) {
+                    let results = data.results;
+                    // Дополнительная фильтрация по расстоянию, если нужна точность (опционально)
+                    if (CENTER_LAT !== null && CENTER_LON !== null && RADIUS_KM !== null) {
+                        results = results.filter(item => {
+                            if (!item.geometry || !item.geometry.coordinates) return true;
+                            const [lng, lat] = item.geometry.coordinates;
+                            const dist = getDistanceFromLatLonInKm(CENTER_LAT, CENTER_LON, lat, lng);
+                            return dist <= RADIUS_KM;
+                        });
+                    }
+                    return results.map(item => ({
+                        title: item.title.text,
+                        subtitle: item.subtitle?.text || "",
+                        id: item.uri,
+                        lat: item.geometry?.coordinates ? item.geometry.coordinates[1] : null,
+                        lng: item.geometry?.coordinates ? item.geometry.coordinates[0] : null,
+                        kind: item.kind || null,  // тип объекта (дом, улица, организация и т.д.)
+                        uri: item.uri
+                    }));
+                }
+                return [];
+            } catch (err) {
+                console.error("Suggest error:", err);
+                return [];
+            }
+        }
+
+        // Расстояние в км (формула гаверсинуса)
+        function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
+            const R = 6371;
+            const dLat = deg2rad(lat2 - lat1);
+            const dLon = deg2rad(lon2 - lon1);
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                      Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) *
+                      Math.sin(dLon/2) * Math.sin(dLon/2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            return R * c;
+        }
+        function deg2rad(deg) { return deg * (Math.PI/180); }
+
+        // Отображение списка подсказок
+        function showSuggestions(suggestions) {
+            if (!suggestions.length) {
+                suggestList.style.display = "none";
+                return;
+            }
+            suggestList.innerHTML = "";
+            suggestions.forEach(sugg => {
+                const div = document.createElement("div");
+                div.className = "suggest-item";
+                // Показываем title + subtitle в одну строку
+                div.innerHTML = `<strong>${escapeHtml(sugg.title)}</strong><br><small>${escapeHtml(sugg.subtitle)}</small>`;
+                div.addEventListener("click", async () => {
+                    searchInput.value = sugg.title;
+                    suggestList.style.display = "none";
+                    if (sugg.lat && sugg.lng) {
+                        // Если координаты уже есть — сразу отдаём с дополнительной информацией
+                        await getFullInfoAndRedirect(sugg.title, sugg.lat, sugg.lng, sugg.subtitle, sugg.kind);
+                    } else {
+                        // Иначе геокодируем
+                        await geocodeAndRedirect(sugg.title);
+                    }
+                });
+                suggestList.appendChild(div);
+            });
+            suggestList.style.display = "block";
+        }
+
+        // Получение полной информации через геокодер (для подстраховки)
+        async function geocodeAndRedirect(address) {
+            const url = `https://geocode-maps.yandex.ru/1.x/?apikey=${API_KEY}&geocode=${encodeURIComponent(address)}&format=json&results=1`;
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                const members = data.response.GeoObjectCollection.featureMember;
+                if (members && members.length > 0) {
+                    const geoObject = members[0].GeoObject;
+                    const pos = geoObject.Point.pos;
+                    const [lng, lat] = pos.split(" ").map(Number);
+                    const fullAddress = geoObject.metaDataProperty.GeocoderMetaData.text;
+                    const kind = geoObject.metaDataProperty.GeocoderMetaData.kind;
+                    const name = geoObject.name || "";
+                    const description = geoObject.description || "";
+                    const postalCode = geoObject.metaDataProperty.GeocoderMetaData.Address?.postal_code || "";
+                    // Собираем дополнительную информацию
+                    let extra = "";
+                    if (kind === "organization") {
+                        extra = name;
+                    } else if (postalCode) {
+                        extra = `Индекс: ${postalCode}`;
+                    }
+                    redirectWithResult(fullAddress, lat, lng, description || extra, kind);
+                } else {
+                    showError("Не найдено");
+                }
+            } catch (err) {
+                console.error(err);
+                showError("Ошибка геокодирования");
+            }
+        }
+
+        // Если у нас уже есть координаты из suggest, пробуем обогатить данные через геокодер
+        async function getFullInfoAndRedirect(address, lat, lng, subtitle, kind) {
+            // Можно попытаться получить более полный адрес и детали
+            const url = `https://geocode-maps.yandex.ru/1.x/?apikey=${API_KEY}&geocode=${lng},${lat}&format=json&results=1`;
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                const members = data.response.GeoObjectCollection.featureMember;
+                if (members && members.length > 0) {
+                    const geoObject = members[0].GeoObject;
+                    const fullAddress = geoObject.metaDataProperty.GeocoderMetaData.text;
+                    const objKind = geoObject.metaDataProperty.GeocoderMetaData.kind;
+                    const name = geoObject.name || "";
+                    const description = geoObject.description || "";
+                    const postalCode = geoObject.metaDataProperty.GeocoderMetaData.Address?.postal_code || "";
+                    let extra = subtitle || "";
+                    if (objKind === "organization" && name) extra = name;
+                    else if (postalCode) extra = `Индекс: ${postalCode}`;
+                    redirectWithResult(fullAddress, lat, lng, extra, objKind);
+                } else {
+                    // fallback
+                    redirectWithResult(address, lat, lng, subtitle, kind);
+                }
+            } catch (err) {
+                console.error(err);
+                redirectWithResult(address, lat, lng, subtitle, kind);
+            }
+        }
+
+        // Редирект в Glide с расширенными параметрами
+        function redirectWithResult(address, lat, lng, extraInfo = "", kind = "") {
+            const params = new URLSearchParams({
+                address: address,
+                lat: lat.toFixed(6),
+                lng: lng.toFixed(6),
+                extra: extraInfo,      // дополнительная информация (название организации, индекс и т.п.)
+                kind: kind,            // тип объекта: house, street, organization, etc.
+                timestamp: Date.now()
+            });
+            const separator = CALLBACK_URL.includes('?') ? '&' : '?';
+            const redirectUrl = `${CALLBACK_URL}${separator}${params.toString()}`;
+            window.location.href = redirectUrl;
+        }
+
+        function showError(msg) {
+            const errDiv = document.createElement("div");
+            errDiv.className = "error";
+            errDiv.innerText = msg;
+            document.body.appendChild(errDiv);
+            setTimeout(() => errDiv.remove(), 3000);
+        }
+
+        // Обработчик ввода
+        searchInput.addEventListener("input", async (e) => {
+            const query = e.target.value;
+            if (currentTimeout) clearTimeout(currentTimeout);
+            if (query.length < 2) {
+                suggestList.style.display = "none";
+                return;
+            }
+            currentTimeout = setTimeout(async () => {
+                const suggestions = await fetchSuggestions(query);
+                showSuggestions(suggestions);
+            }, 300);
+        });
+
+        // Закрыть подсказки при клике вне
+        document.addEventListener("click", (e) => {
+            if (!searchInput.contains(e.target) && !suggestList.contains(e.target)) {
+                suggestList.style.display = "none";
+            }
+        });
+
+        function escapeHtml(str) {
+            if (!str) return "";
+            return str.replace(/[&<>]/g, function(m) {
+                if (m === '&') return '&amp;';
+                if (m === '<') return '&lt;';
+                if (m === '>') return '&gt;';
+                return m;
+            });
+        }
+    </script>
+</body>
+</html>
