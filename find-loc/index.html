@@ -87,7 +87,7 @@
             throw new Error('callback_url is required');
         }
 
-        // === ДВА КЛЮЧА ===
+        // === ДВА КЛЮЧА (подставьте свои) ===
         const MAIN_API_KEY = "453e51e5-8c87-4fa2-a65f-c28a5184369e";
         const SUGGEST_API_KEY = "c36c1a87-abde-4aee-ab53-dbfbfa1fb53f";
 
@@ -107,7 +107,7 @@
         }
         function deg2rad(deg) { return deg * (Math.PI/180); }
 
-        // ========== Запрос подсказок, ТОЛЬКО с координатами ==========
+        // ========== Запрос подсказок ==========
         async function fetchSuggestions(query) {
             if (!query.trim()) return [];
             
@@ -118,15 +118,19 @@
             
             let suggestUrl = `https://suggest-maps.yandex.ru/v1/suggest?apikey=${SUGGEST_API_KEY}&text=${encodeURIComponent(searchText)}&types=geo,biz&language=ru_RU&results=20`;
             
+            // Всегда добавляем ll, если есть координаты центра
+            // Это необходимо, чтобы API возвращал geometry.coordinates в ответе
             let useDistanceSort = false;
-            if (!LOCATION && CENTER_LAT !== null && CENTER_LON !== null && !isNaN(CENTER_LAT) && !isNaN(CENTER_LON)) {
+            if (CENTER_LAT !== null && CENTER_LON !== null && !isNaN(CENTER_LAT) && !isNaN(CENTER_LON)) {
                 suggestUrl += `&ll=${CENTER_LON},${CENTER_LAT}`;
-                if (RADIUS_KM !== null && !isNaN(RADIUS_KM)) {
+                // Ограничение области (strict_bounds) применяем только если нет location и задан радиус
+                if (!LOCATION && RADIUS_KM !== null && !isNaN(RADIUS_KM)) {
                     const radiusDeg = RADIUS_KM / 111.0;
                     const spnValue = (radiusDeg * 2).toFixed(6);
                     suggestUrl += `&spn=${spnValue},${spnValue}&strict_bounds=1`;
                 }
-                useDistanceSort = true;
+                // Сортируем по расстоянию, если центр задан И нет location (иначе сортировка по релевантности API)
+                useDistanceSort = !LOCATION;
             }
             
             try {
@@ -145,7 +149,7 @@
                             if (item.distance && typeof item.distance === 'object') {
                                 distance = item.distance.value; // метры
                             }
-                            if (useDistanceSort && distance === null) {
+                            if (useDistanceSort && distance === null && CENTER_LAT) {
                                 distance = getDistanceFromLatLonInKm(CENTER_LAT, CENTER_LON, lat, lng) * 1000;
                             }
                             return {
@@ -166,10 +170,6 @@
                             return 0;
                         });
                     }
-                    
-                    console.log("Suggest API response:", data);
-                    console.log("First result:", data.results?.[0]);
-
                     return results;
                 }
                 return [];
