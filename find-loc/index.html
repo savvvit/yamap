@@ -166,6 +166,10 @@
                             return 0;
                         });
                     }
+                    
+                    console.log("Suggest API response:", data);
+                    console.log("First result:", data.results?.[0]);
+
                     return results;
                 }
                 return [];
