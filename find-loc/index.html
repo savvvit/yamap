@@ -77,7 +77,7 @@
         // ========== Параметры из URL ==========
         const urlParams = new URLSearchParams(window.location.search);
         const CALLBACK_URL = urlParams.get('callback_url');
-        const LOCATION = urlParams.get('location');          // например "село Новокули"
+        const LOCATION = urlParams.get('location');
         const CENTER_LAT = urlParams.has('center_lat') ? parseFloat(urlParams.get('center_lat')) : null;
         const CENTER_LON = urlParams.has('center_lon') ? parseFloat(urlParams.get('center_lon')) : null;
         const RADIUS_KM = urlParams.has('radius_km') ? parseFloat(urlParams.get('radius_km')) : null;
@@ -87,87 +87,14 @@
             throw new Error('callback_url is required');
         }
 
-        // === ДВА КЛЮЧА (подставьте свои) ===
-        const MAIN_API_KEY = "453e51e5-8c87-4fa2-a65f-c28a5184369e";
-        const SUGGEST_API_KEY = "c36c1a87-abde-4aee-ab53-dbfbfa1fb53f";
+        // === ДВА КЛЮЧА ===
+        const MAIN_API_KEY = "ОСНОВНОЙ_КЛЮЧ_ДЛЯ_JS_API_И_ГЕОКОДЕРА";
+        const SUGGEST_API_KEY = "КЛЮЧ_ДЛЯ_SUGGEST_API";
 
         const searchInput = document.getElementById("searchInput");
         const suggestList = document.getElementById("suggestList");
         let currentTimeout = null;
 
-        // ========== Запрос подсказок с «хитрым» добавлением location ==========
-        async function fetchSuggestions(query) {
-            if (!query.trim()) return [];
-            
-            // Формируем поисковую фразу: если передан location, добавляем его
-            let searchText = query;
-            if (LOCATION && LOCATION.trim()) {
-                searchText = `${query}, ${LOCATION}`;
-            }
-            
-            let suggestUrl = `https://suggest-maps.yandex.ru/v1/suggest?apikey=${SUGGEST_API_KEY}&text=${encodeURIComponent(searchText)}&types=geo,biz&language=ru_RU&results=20`;
-            
-            // Добавляем ll для получения расстояния и (опционально) ограничения области
-            if (CENTER_LAT !== null && CENTER_LON !== null && !isNaN(CENTER_LAT) && !isNaN(CENTER_LON)) {
-                suggestUrl += `&ll=${CENTER_LON},${CENTER_LAT}`;
-                // Если задан радиус, можно добавить spn + strict_bounds (необязательно)
-                if (RADIUS_KM !== null && !isNaN(RADIUS_KM)) {
-                    const radiusDeg = RADIUS_KM / 111.0;
-                    const spnValue = (radiusDeg * 2).toFixed(6);
-                    suggestUrl += `&spn=${spnValue},${spnValue}&strict_bounds=1`;
-                }
-            }
-            
-            try {
-                const response = await fetch(suggestUrl);
-                if (!response.ok) {
-                    console.error(`Suggest API error: ${response.status}`);
-                    return [];
-                }
-                const data = await response.json();
-                if (data && data.results) {
-                    let results = data.results.map(item => {
-                        let distance = null;
-                        if (item.distance && typeof item.distance === 'object') {
-                            distance = item.distance.value; // в метрах
-                        }
-                        return {
-                            title: item.title.text,
-                            subtitle: item.subtitle?.text || "",
-                            lat: item.geometry?.coordinates ? item.geometry.coordinates[1] : null,
-                            lng: item.geometry?.coordinates ? item.geometry.coordinates[0] : null,
-                            kind: item.kind || null,
-                            distance: distance
-                        };
-                    });
-                    
-                    // Сортировка по расстоянию (от меньшего к большему), если есть координаты центра
-                    if (CENTER_LAT !== null && CENTER_LON !== null) {
-                        results.sort((a, b) => {
-                            // Если есть distance от API – используем его
-                            if (a.distance !== null && b.distance !== null) return a.distance - b.distance;
-                            // Если нет – вычисляем сами (на случай, если API не вернул)
-                            let distA = a.distance;
-                            let distB = b.distance;
-                            if (distA === null && a.lat && a.lng) distA = getDistanceFromLatLonInKm(CENTER_LAT, CENTER_LON, a.lat, a.lng) * 1000;
-                            if (distB === null && b.lat && b.lng) distB = getDistanceFromLatLonInKm(CENTER_LAT, CENTER_LON, b.lat, b.lng) * 1000;
-                            if (distA !== null && distB !== null) return distA - distB;
-                            if (distA !== null) return -1;
-                            if (distB !== null) return 1;
-                            return 0;
-                        });
-                    }
-                    
-                    return results;
-                }
-                return [];
-            } catch (err) {
-                console.error("Suggest fetch error:", err);
-                return [];
-            }
-        }
-
-        // Функция расстояния (км)
         function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
             const R = 6371;
             const dLat = deg2rad(lat2 - lat1);
@@ -180,36 +107,75 @@
         }
         function deg2rad(deg) { return deg * (Math.PI/180); }
 
-        // Геокодирование (если у подсказки нет координат)
-        async function geocodeAndRedirect(address) {
-            const url = `https://geocode-maps.yandex.ru/1.x/?apikey=${MAIN_API_KEY}&geocode=${encodeURIComponent(address)}&format=json&results=1`;
-            try {
-                const response = await fetch(url);
-                if (!response.ok) throw new Error(`Geocode HTTP ${response.status}`);
-                const data = await response.json();
-                const members = data.response.GeoObjectCollection.featureMember;
-                if (members && members.length > 0) {
-                    const geoObject = members[0].GeoObject;
-                    const pos = geoObject.Point.pos;
-                    const [lng, lat] = pos.split(" ").map(Number);
-                    const fullAddress = geoObject.metaDataProperty.GeocoderMetaData.text;
-                    const kind = geoObject.metaDataProperty.GeocoderMetaData.kind;
-                    const name = geoObject.name || "";
-                    const postalCode = geoObject.metaDataProperty.GeocoderMetaData.Address?.postal_code || "";
-                    let extra = "";
-                    if (kind === "organization") extra = name;
-                    else if (postalCode) extra = `Индекс: ${postalCode}`;
-                    redirectWithResult(fullAddress, lat, lng, extra, kind);
-                } else {
-                    showError("Не найдено");
+        // ========== Запрос подсказок, ТОЛЬКО с координатами ==========
+        async function fetchSuggestions(query) {
+            if (!query.trim()) return [];
+            
+            let searchText = query;
+            if (LOCATION && LOCATION.trim()) {
+                searchText = `${query}, ${LOCATION}`;
+            }
+            
+            let suggestUrl = `https://suggest-maps.yandex.ru/v1/suggest?apikey=${SUGGEST_API_KEY}&text=${encodeURIComponent(searchText)}&types=geo,biz&language=ru_RU&results=20`;
+            
+            let useDistanceSort = false;
+            if (!LOCATION && CENTER_LAT !== null && CENTER_LON !== null && !isNaN(CENTER_LAT) && !isNaN(CENTER_LON)) {
+                suggestUrl += `&ll=${CENTER_LON},${CENTER_LAT}`;
+                if (RADIUS_KM !== null && !isNaN(RADIUS_KM)) {
+                    const radiusDeg = RADIUS_KM / 111.0;
+                    const spnValue = (radiusDeg * 2).toFixed(6);
+                    suggestUrl += `&spn=${spnValue},${spnValue}&strict_bounds=1`;
                 }
+                useDistanceSort = true;
+            }
+            
+            try {
+                const response = await fetch(suggestUrl);
+                if (!response.ok) {
+                    console.error(`Suggest API error: ${response.status}`);
+                    return [];
+                }
+                const data = await response.json();
+                if (data && data.results) {
+                    let results = data.results
+                        .filter(item => item.geometry && item.geometry.coordinates) // только с координатами
+                        .map(item => {
+                            const [lng, lat] = item.geometry.coordinates;
+                            let distance = null;
+                            if (item.distance && typeof item.distance === 'object') {
+                                distance = item.distance.value; // метры
+                            }
+                            if (useDistanceSort && distance === null) {
+                                distance = getDistanceFromLatLonInKm(CENTER_LAT, CENTER_LON, lat, lng) * 1000;
+                            }
+                            return {
+                                title: item.title.text,
+                                subtitle: item.subtitle?.text || "",
+                                lat: lat,
+                                lng: lng,
+                                kind: item.kind || null,
+                                distance: distance
+                            };
+                        });
+                    
+                    if (useDistanceSort) {
+                        results.sort((a, b) => {
+                            if (a.distance !== null && b.distance !== null) return a.distance - b.distance;
+                            if (a.distance !== null) return -1;
+                            if (b.distance !== null) return 1;
+                            return 0;
+                        });
+                    }
+                    return results;
+                }
+                return [];
             } catch (err) {
-                console.error(err);
-                showError("Ошибка геокодирования");
+                console.error("Suggest fetch error:", err);
+                return [];
             }
         }
 
-        // Обогащение, если координаты уже есть
+        // Обогащение координат (обратный геокодер для получения полного адреса и extra)
         async function enrichAndRedirect(address, lat, lng, subtitle, kind) {
             const url = `https://geocode-maps.yandex.ru/1.x/?apikey=${MAIN_API_KEY}&geocode=${lng},${lat}&format=json&results=1`;
             try {
@@ -258,7 +224,6 @@
             setTimeout(() => errDiv.remove(), 3000);
         }
 
-        // Отображение подсказок
         function showSuggestions(suggestions) {
             if (!suggestions.length) {
                 suggestList.style.display = "none";
@@ -275,7 +240,7 @@
                     if (sugg.lat && sugg.lng) {
                         await enrichAndRedirect(sugg.title, sugg.lat, sugg.lng, sugg.subtitle, sugg.kind);
                     } else {
-                        await geocodeAndRedirect(sugg.title);
+                        showError("Не удалось определить координаты. Выберите другой вариант.");
                     }
                 });
                 suggestList.appendChild(div);
@@ -283,7 +248,6 @@
             suggestList.style.display = "block";
         }
 
-        // Обработчик ввода с debounce
         searchInput.addEventListener("input", async (e) => {
             const query = e.target.value;
             if (currentTimeout) clearTimeout(currentTimeout);
