@@ -125,7 +125,7 @@
         // Инициализация SuggestView после загрузки API
         ymaps.ready(function () {
             // Настраиваем ограничение области поиска, если передан центр
-            let options = {};
+            let options = { suggestTypes: 0 }; // 0 эквивалентно 'NONE', поиск по всем объектам
             if (CENTER_LAT !== null && CENTER_LON !== null && !isNaN(CENTER_LAT) && !isNaN(CENTER_LON)) {
                 // Рассчитываем градусы в километрах: 1 градус ≈ 111 км
                 const radiusDeg = RADIUS_KM !== null ? RADIUS_KM / 111.0 : 5 / 111.0;
@@ -133,7 +133,7 @@
                     [CENTER_LAT - radiusDeg, CENTER_LON - radiusDeg],
                     [CENTER_LAT + radiusDeg, CENTER_LON + radiusDeg]
                 ];
-                options = { boundedBy: bounds };
+                options = { suggestTypes: 0, boundedBy: bounds };
             }
 
             // Создаем элемент поиска с подсказками
