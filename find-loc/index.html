@@ -63,7 +63,7 @@
         // Координаты центра и радиус для ограничения поиска
         const CENTER_LAT = urlParams.has('center_lat') ? parseFloat(urlParams.get('center_lat')) : null;
         const CENTER_LON = urlParams.has('center_lon') ? parseFloat(urlParams.get('center_lon')) : null;
-        const RADIUS_KM = urlParams.has('radius_km') ? parseFloat(urlParams.get('radius_km')) : null;
+        const RADIUS_KM = urlParams.has('radius_km') ? parseFloat(urlParams.get('radius_km')) : 5; // 5 км по умолчанию
 
         if (!CALLBACK_URL) {
             document.body.innerHTML = '<div class="error">Ошибка: не указан параметр callback_url</div>';
@@ -80,10 +80,7 @@
                 kind: kind,
                 timestamp: Date.now()
             });
-            const separator = CALLBACK_URL.includes('?') ? '&' : '?';
-            const redirectUrl = `${CALLBACK_URL}${separator}${params.toString()}`;
-            window.location.href = redirectUrl;
-        }
+        });
 
         // Функция для геокодирования выбранного адреса
         function geocodeAndRedirect(address) {
